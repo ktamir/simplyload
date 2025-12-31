@@ -1,0 +1,123 @@
+# SimplyLoad - Cursor Development Rules
+
+**Context:** Initial MVP development (Phases 0-5). Workflow may change after product launch.
+
+## Prime Directive: Stay Minimal
+
+Build MVP incrementally. Every line must be justified by PROJECT_PLAN.md requirements.
+
+## Before Coding
+
+1. Check PROJECT_PLAN.md for current PR scope
+2. Check PROGRESS.md for status
+3. Update PROGRESS.md when starting/completing PRs
+
+## Core Rules
+
+### DO:
+- ✓ Implement ONLY current PR scope
+- ✓ Write tests
+- ✓ Use simplest working solution
+- ✓ Add dependencies when first needed
+- ✓ Update PROGRESS.md on completion
+- ✓ Use type hints (Python)
+
+### DON'T:
+- ✗ Add features outside PR scope
+- ✗ Create abstractions for single cases
+- ✗ Add error handling for impossible scenarios
+- ✗ Make constants configurable "just in case"
+- ✗ Write obvious docstrings
+- ✗ Future-proof or optimize prematurely
+- ✗ Add backwards compatibility for non-existent code
+
+## Anti-Patterns
+
+### 1. No Premature Abstraction
+```python
+# BAD - abstracting one implementation
+class StorageProvider(ABC):
+    @abstractmethod
+    def upload(self): pass
+
+# GOOD - concrete implementation
+def upload_to_s3(data):
+    boto3.client('s3').put_object(...)
+```
+
+### 2. No Hypothetical Parameters
+```python
+# BAD - unused options
+def load_batch(batch, retry=3, timeout=30, validate=True): ...
+
+# GOOD - only what's needed
+def load_batch(batch): ...
+```
+
+### 3. Configuration Only When Values Vary
+
+**Principle:** Configuration is code. Only make configurable if value proven to vary.
+
+```python
+# BAD - configuring constants
+config = {
+    "batch_size": 10000,           # Never changes
+    "parquet_compression": "snappy", # Single option
+    "s3_encryption": "SSE-S3",     # Only one supported
+}
+
+# GOOD - hardcode until proven variable
+BATCH_SIZE = 10000
+s3.put_object(..., ServerSideEncryption="AES256")
+```
+
+**Add config for:**
+- ✓ Customer credentials (required: Snowflake, Postgres creds)
+- ✓ Customer choices (required: which tables to sync)
+- ✓ Proven variation (found: dev vs prod use different values)
+
+**Don't add config for:**
+- ✗ "Someone might want to change this"
+- ✗ "Makes it flexible"
+- ✗ "Configuration is best practice"
+
+**Rule:** Can't name 2+ real scenarios with different values? Hardcode it.
+
+### 4. Trust Internal Code
+```python
+# BAD - over-validation
+def merge_table(table: SourceTable):
+    if not table: raise ValueError("table required")
+    if not isinstance(table, SourceTable): raise TypeError()
+    # ...
+
+# GOOD - type hints are enough
+def merge_table(table: SourceTable):
+    # Internal call - trust it
+    # ...
+```
+
+Only validate at system boundaries (user input, API responses, file parsing).
+
+## PR Completion Checklist
+
+Before marking PR done:
+- [ ] Implemented ONLY PR checklist items?
+- [ ] No "what if" features?
+- [ ] No unused parameters/config?
+- [ ] Tests pass?
+- [ ] PROGRESS.md updated?
+- [ ] Can any code be deleted?
+
+## Progress Tracking
+
+**Start PR:** Set PROGRESS.md "Current Status" to PR-X.Y
+**Complete PR:** Add to "Recent Completed PRs", update to next PR
+
+## Guiding Principles
+
+- **Three similar lines > one premature abstraction**
+- **Hardcode first, extract when necessary**
+- **Delete unused code immediately**
+- **Minimum complexity for current requirements**
+- **When in doubt, do less**
