@@ -10,7 +10,7 @@
 
 ### What We're Testing
 
-1. **Cost comparison:** SimplyLoad vs Fivetran vs Airbyte
+1. **Cost comparison:** SimplyLoad vs Fivetran vs Rivery vs Airbyte
 2. **Feature parity:** Can we match the core experience?
 3. **Infrastructure costs:** What will SimplyLoad actually cost to run?
 4. **Data quality:** Do we maintain correctness (especially soft deletes)?
@@ -20,12 +20,22 @@
 ```
 Sample App (Postgres)
     ↓
-    ├─→ Fivetran → Snowflake
-    ├─→ Airbyte → Snowflake
-    └─→ SimplyLoad → Snowflake
+    ├─→ Fivetran → Snowflake (Commercial, MAR pricing)
+    ├─→ Rivery → Snowflake (Commercial, alternative pricing model)
+    ├─→ Airbyte → Snowflake (Open source, self-hosted)
+    └─→ SimplyLoad → Snowflake (Our solution)
 ```
 
 **Measure:** Setup time, sync latency, correctness, cost per 1M rows
+
+### Tools Being Compared
+
+| Tool | Type | Pricing Model | Free Tier | Best For |
+|------|------|---------------|-----------|----------|
+| **Fivetran** | Commercial SaaS | MAR (Monthly Active Rows) | 500K MAR free | Benchmark (market leader) |
+| **Rivery** | Commercial SaaS | Platform + Data volume | 14-day trial | Alternative pricing model |
+| **Airbyte Cloud** | Managed SaaS | Credits-based | 14-day trial + $1000 credits | Managed ETL alternative |
+| **SimplyLoad** | Our Solution | TBD (compute + storage) | N/A | What we're building |
 
 ---
 
@@ -481,6 +491,47 @@ pulumi destroy
 
 ## Part 3: Testing Protocol (Cost-Optimized)
 
+### Networking: Local Postgres + Cloud Snowflake
+
+**Question:** Will local Docker Postgres work with cloud-based Snowflake?
+
+**Answer:** Yes, but with different approaches per tool:
+
+| Tool | Where It Runs | Access to Local Postgres | Access to Cloud Snowflake |
+|------|---------------|--------------------------|---------------------------|
+| **SimplyLoad** | Your machine | ✓ Direct (localhost:5432) | ✓ Direct (cloud endpoint) |
+| **Fivetran** | Fivetran's cloud | ⚠️ Needs public access (ngrok/SSH tunnel) | ✓ Direct |
+| **Rivery** | Rivery's cloud | ⚠️ Needs public access (ngrok/SSH tunnel) | ✓ Direct |
+| **Airbyte Cloud** | Airbyte's cloud | ⚠️ Needs public access (ngrok/SSH tunnel) | ✓ Direct |
+
+**Solutions for exposing local Postgres to cloud ETL tools:**
+
+**Option 1: ngrok (Easiest for testing)**
+```bash
+# Install ngrok
+brew install ngrok  # or download from ngrok.com
+
+# Expose local Postgres
+ngrok tcp 5432
+
+# Use the ngrok URL in Fivetran/Rivery/Airbyte Cloud
+# Example: tcp://0.tcp.ngrok.io:12345
+```
+
+**Option 2: SSH Tunnel**
+- Most tools support SSH tunnel to localhost
+- More secure than direct exposure
+- Requires SSH server accessible from internet
+
+**Option 3: Use RDS instead**
+- Deploy Postgres to RDS (publicly accessible)
+- All tools can connect directly
+- Costs ~$15/month but simpler networking
+
+**Recommendation:** Use **ngrok** for POC testing (free, simple), or upgrade to **RDS** if ngrok is unreliable.
+
+---
+
 ### Setup Phase (3-4 days)
 
 **Day 1: Infrastructure**
@@ -488,28 +539,32 @@ pulumi destroy
 - [ ] Setup Pulumi (local mode, S3 only)
 - [ ] Start local Postgres with Docker
 - [ ] Generate small initial dataset (1K users, 5K orders, 20K events)
+- [ ] Setup ngrok for Postgres exposure (if testing cloud ETL tools)
 - **Cost so far:** $0
 
 **Day 2: Snowflake**
 - [ ] Sign up for Snowflake trial (30 days free, $400 credit)
 - [ ] Create XS warehouse (auto-suspend 60s)
-- [ ] Create schemas: `fivetran`, `airbyte`, `simplyload`
+- [ ] Create schemas: `fivetran`, `rivery`, `airbyte`, `simplyload`
 - [ ] Create read-only user for validation queries
 - **Cost:** $0 (trial credits)
 
-**Day 3: Fivetran**
-- [ ] Sign up for Fivetran free tier (500K MAR/month free)
-- [ ] Connect Postgres (local, use ngrok or expose port)
-- [ ] Select 3 tables: users, orders, events
-- [ ] Run initial sync
-- [ ] **Track:** Setup time, UX experience
-- **Cost:** $0 (under free tier limit)
+**Day 3: Cloud ETL Tools**
+- [ ] Sign up for Fivetran free tier (500K MAR/month)
+- [ ] Sign up for Rivery trial (14 days)
+- [ ] Sign up for Airbyte Cloud trial ($1000 credits)
+- [ ] Connect each to Postgres via ngrok URL
+- [ ] Configure 3 tables: users, orders, events
+- [ ] Run initial syncs
+- [ ] **Track:** Setup time, UX experience for each
+- **Cost:** $0 (all under trial/free tier)
 
-**Day 4: Airbyte & SimplyLoad**
-- [ ] Deploy Airbyte locally (Docker)
-- [ ] Configure same 3 tables
+**Day 4: SimplyLoad**
 - [ ] Setup SimplyLoad (when ready)
-- [ ] Validate all row counts match
+- [ ] Connect to local Postgres (direct) and Snowflake (cloud)
+- [ ] Configure same 3 tables
+- [ ] Run initial sync
+- [ ] Validate all row counts match across all tools
 - **Cost:** $0
 
 ### Testing Phase (24-48 hours)
@@ -546,19 +601,106 @@ SELECT
 SELECT COUNT(*) FROM simplyload.users WHERE _fivetran_deleted = true;
 ```
 
-### Cost Tracking Spreadsheet
+### Cost Measurement Methodology
+
+**CRITICAL: Understanding Who Pays What**
+
+All ETL tools (Fivetran, Rivery, Airbyte Cloud, SimplyLoad) connect to the **customer's Snowflake account**. The customer receives the Snowflake bill directly.
+
+**Who Pays Snowflake Warehouse Costs?**
+
+| Tool | Snowflake Costs |
+|------|-----------------|
+| Fivetran | Customer pays Snowflake directly |
+| Rivery | Customer pays Snowflake directly |
+| Airbyte Cloud | Customer pays Snowflake directly |
+| SimplyLoad | Customer pays Snowflake directly |
+
+**Therefore:** Snowflake costs are roughly the same for all tools (assuming equal efficiency) and should NOT be included when comparing service costs.
+
+---
+
+### What to Measure in POC
+
+**Track TWO separate cost categories:**
+
+#### 1. SimplyLoad Infrastructure Costs (What YOU Pay)
+
+```python
+# Your operating costs - this determines your pricing
+simplyload_infrastructure = {
+    "ec2": track_compute_cost(),     # OR Lambda/container costs
+    "s3": track_storage_cost(),      # Parquet files
+    # DO NOT INCLUDE Snowflake - customer pays that!
+}
+
+# Unit economics
+cost_per_million_rows = (total_infra_cost / rows_synced) * 1_000_000
+
+# Target: < $20-30 per million rows
+# Allows 3x margin = $60-90 price
+# Still much cheaper than Fivetran ($180 for 1M MAR)
+```
+
+#### 2. Snowflake Efficiency (Competitive Advantage)
+
+```sql
+-- Track Snowflake warehouse usage for comparison
+SELECT
+    warehouse_name,
+    SUM(execution_time) / 1000 / 60 as minutes_used,
+    COUNT(*) as query_count
+FROM snowflake.account_usage.query_history
+WHERE warehouse_name IN ('simplyload_wh', 'fivetran_wh')
+    AND start_time > DATEADD(day, -1, CURRENT_TIMESTAMP())
+GROUP BY warehouse_name;
+
+-- If SimplyLoad causes LESS warehouse usage than Fivetran
+-- → Additional value proposition!
+-- If MORE → Hurts total customer cost (bad!)
+```
+
+**Why track Snowflake separately?**
+- If your efficiency is BETTER → marketing advantage
+- If your efficiency is WORSE → you're hurting customer's total cost
+- If your efficiency is EQUAL → costs cancel out, compare service fees only
+
+---
+
+### Correct Cost Comparison Matrix
+
+**Customer's Total Cost = Service Fee + Snowflake Costs**
+
+| Volume | Fivetran Service | SimplyLoad Service | Customer's Snowflake (Same) | Total: Fivetran | Total: SimplyLoad | Savings |
+|--------|------------------|-------------------|----------------------------|----------------|------------------|---------|
+| 1M rows | $180 | $57 | $100 | $280 | $157 | **44%** |
+| 5M rows | $500 | $150 | $250 | $750 | $400 | **47%** |
+| 10M rows | $900 | $250 | $400 | $1,300 | $650 | **50%** |
+
+*Assumptions: SimplyLoad infra cost $19/month (1M rows), 3x margin = $57; Snowflake efficiency equal*
+
+**Key Insight:** Even with equal Snowflake efficiency, SimplyLoad can be 40-50% cheaper by having lower infrastructure + margin costs.
+
+---
+
+### POC Cost Tracking (Daily)
 
 ```
-| Component | Daily Cost | Notes |
-|-----------|------------|-------|
-| Postgres (Docker) | $0 | Local |
-| S3 | $0.01 | <1GB data |
-| Snowflake | $0.50 | Trial credits |
-| Fivetran | $0 | Free tier |
-| Airbyte | $0 | Local Docker |
-| SimplyLoad compute | $0.50 | EC2 t4g.micro (if needed) |
-| **Total/day** | **~$1** | |
-| **Total 7-day test** | **~$7** | |
+| Component | Who Pays | Daily Cost | Notes |
+|-----------|----------|------------|-------|
+| **SimplyLoad Infrastructure:** |
+| Postgres (Docker) | You (for testing) | $0 | Local |
+| S3 | You (operating cost) | $0.01 | <1GB data |
+| EC2 (if used) | You (operating cost) | $0.14 | t4g.micro |
+| **Customer's Snowflake:** |
+| Warehouse (all tools) | Customer | $0.50 | Same for all tools |
+| **Service Fees (in production):** |
+| Fivetran | Customer | $0 | Free tier in POC |
+| Rivery | Customer | $0 | Trial in POC |
+| Airbyte Cloud | Customer | $0 | Trial in POC |
+| SimplyLoad | Customer | $0 | Testing phase |
+| **POC Total/day** | | **~$0.65** | Mostly your infra |
+| **7-day test** | | **~$5** | |
 ```
 
 ---
@@ -626,44 +768,141 @@ pulumi destroy -y
 
 ---
 
-## Part 5: Expected Costs (Per Month)
+## Part 5: Cost Analysis & Viability
 
-### Minimal Setup (Recommended for POC)
-- **Postgres:** $0 (Docker local)
-- **S3:** $0.25 (storage)
-- **Snowflake:** $0 (trial) → $8/month after (XS warehouse, 1hr/day)
-- **Fivetran:** $0 (free tier up to 500K MAR)
-- **SimplyLoad:** $0 (local) or $5/month (t4g.micro EC2)
-- **Total:** **< $10/month** (or $0 during trial period)
+### Production Cost Breakdown (1M Rows/Month Example)
 
-### If Scaling Up (Higher Volume)
-- **Postgres RDS:** $15/month (db.t3.micro)
-- **S3:** $1/month (10GB)
-- **Snowflake:** $15/month (more usage)
-- **Fivetran:** $100+/month (if exceed free tier)
-- **SimplyLoad:** $10-15/month
-- **Total:** **~$40/month**
+**SimplyLoad Operating Costs (What You Pay):**
+```
+EC2 t4g.small (24/7):    $12/month
+S3 storage (~10GB):       $2/month
+Data transfer:            $1/month
+-----------------------------------------
+Total Infrastructure:    $15/month
+
+Add 3x margin:           $45/month  ← Your service price
+```
+
+**Competitor Service Fees:**
+```
+Fivetran (1M MAR):      $180/month
+Rivery (1M rows):       $249/month
+Airbyte Cloud:          $150/month (estimated)
+```
+
+**Customer's Total Cost (Including Snowflake):**
+```
+                        Service Fee    Snowflake    Total
+Fivetran:               $180          $100         $280
+Rivery:                 $249          $100         $349
+Airbyte Cloud:          $150          $100         $250
+SimplyLoad:             $45           $100         $145
+
+SimplyLoad saves:       48% vs Fivetran
+                        58% vs Rivery
+                        42% vs Airbyte Cloud
+```
+
+*Note: Snowflake costs (~$100/month for XS warehouse, 50 hrs) are roughly equal across all tools assuming similar efficiency*
+
+---
+
+### Scaling Economics
+
+| Monthly Volume | SimplyLoad Infra | SimplyLoad Price (3x) | Fivetran Price | Customer Saves | Savings % |
+|----------------|------------------|----------------------|----------------|----------------|-----------|
+| 500K rows | $10 | $30 | $0 (free tier) | -$30 | ❌ |
+| 1M rows | $15 | $45 | $180 | $135 | **75%** |
+| 5M rows | $50 | $150 | $500 | $350 | **70%** |
+| 10M rows | $80 | $240 | $900 | $660 | **73%** |
+| 50M rows | $300 | $900 | $3,500 | $2,600 | **74%** |
+
+**Key Insights:**
+- Not competitive below 500K rows (Fivetran free tier)
+- Highly competitive at 1M+ rows (70%+ savings)
+- Margins improve at scale
+
+---
+
+### POC Phase Costs (Testing Period)
+
+**Week 1-2 Testing (~$5-15 total):**
+```
+Your Infrastructure:
+- S3 storage (5GB):              $0.12
+- Compute options:
+  - Local Docker:                $0.00 (recommended for POC)
+  - EC2 t4g.micro:               $3.36 (if testing deployment)
+  - ECS Fargate:                 $5.00 (if testing container deploy)
+  - Lambda:                      $1.00 (if testing serverless)
+
+Snowflake (customer's):
+- Trial credits:                 $0.00
+- OR: XS warehouse (2 hrs):      $4.00
+
+Service Trials:
+- Fivetran (free tier):          $0.00
+- Rivery (trial):                $0.00
+- Airbyte Cloud (trial):         $0.00
+
+Total Cost: ~$5-15 depending on setup
+```
+
+**Note on Compute Choice:**
+- **POC:** Use local Docker ($0 cost)
+- **Production:** ECS Fargate recommended (no server management, $15-20/month)
+- **At Scale:** Multi-tenant architecture (one service handles all customers)
+- Cost estimates in this doc use EC2 as baseline, but any compute option works
 
 ---
 
 ## Success Criteria
 
-SimplyLoad is viable if:
-- ✓ **Setup time:** < 10 minutes (vs Fivetran ~5 min)
-- ✓ **Correctness:** 100% row count match, soft deletes work
-- ✓ **Cost:** 50-70% cheaper than Fivetran at scale
-- ✓ **Latency:** < 5 minutes for polling mode
+### SimplyLoad is Viable If:
+
+✅ **Infrastructure Cost:** < $30 per million rows
+   - Allows 3x margin while staying 60%+ cheaper than competitors
+   - Measured: EC2 + S3 only (not including Snowflake)
+
+✅ **Snowflake Efficiency:** Equal or better than Fivetran
+   - Measured: Warehouse minutes per 1K rows synced
+   - If worse → hurts customer's total cost
+   - If better → additional competitive advantage
+
+✅ **Setup Time:** < 10 minutes
+   - Close to Fivetran's ~5 minute experience
+   - Measured: Time from credentials to first sync complete
+
+✅ **Correctness:** 100% accuracy
+   - Row counts match source exactly
+   - Soft deletes work (_fivetran_deleted column)
+   - No data loss on failures/restarts
+
+✅ **Latency:** < 5 minutes (polling mode)
+   - Measured: Time from source change to Snowflake availability
+   - Competitive with Fivetran's sync frequency
+
+### Decision Matrix
+
+| Outcome | Action |
+|---------|--------|
+| **Infrastructure < $30/1M rows AND 60%+ cheaper** | ✅ Build SimplyLoad - hypothesis validated |
+| **Infrastructure $30-50/1M rows, 40-60% cheaper** | ⚠️ Build with caution - smaller margins |
+| **Infrastructure > $50/1M rows OR < 40% cheaper** | ❌ Pivot strategy or target different market |
+| **Snowflake usage 2x worse than Fivetran** | ❌ Optimize or reconsider - hurts customer cost |
 
 ---
 
 ## Next Steps
 
 1. **Create playground repo** (separate from simplyload)
-2. **Start with local setup** (Docker Postgres + Pulumi S3)
-3. **Build testing app** (simple Python generator)
-4. **Test Fivetran first** (learn from the best)
-5. **Implement SimplyLoad** (following PROJECT_PLAN.md)
-6. **Compare results** (cost, UX, correctness)
+2. **Follow PLAYGROUND_PLAN.md** (22 PRs, 5 phases)
+3. **Build testing app** (Week 1: data generator + infra)
+4. **Test competitors** (Week 2: Fivetran, Rivery, Airbyte Cloud)
+5. **Analyze results** (Cost, UX, correctness comparison)
+6. **Make go/no-go decision** (Build SimplyLoad if validated)
 
-**Estimated time:** 2-3 weeks to complete full POC
-**Estimated cost:** < $30 total (mostly during trial periods)
+**Estimated time:** 1-2 weeks to complete full POC
+**Estimated cost:** < $15 total (mostly trial periods)
+
+**Detailed implementation plan:** See `PLAYGROUND_PLAN.md` for breakdown of all PRs
